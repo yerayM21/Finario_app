@@ -1,6 +1,10 @@
 import 'package:flutter/material.dart';
-import 'package:supabase_flutter/supabase_flutter.dart';
 import 'package:intl/intl.dart';
+import 'package:uuid/uuid.dart';
+import '../models/product.dart';
+import '../services/DatabaseService.dart';
+
+enum DateType { restock, expiration }
 
 class InventoryScreen extends StatefulWidget {
   @override
@@ -8,43 +12,40 @@ class InventoryScreen extends StatefulWidget {
 }
 
 class _InventoryScreenState extends State<InventoryScreen> {
-  final SupabaseClient _supabase = Supabase.instance.client;
+  final DatabaseService _dbService = DatabaseService();
   final _formKey = GlobalKey<FormState>();
+  final Uuid _uuid = Uuid();
   
   // Controladores para el formulario
   final _nameController = TextEditingController();
   final _quantityController = TextEditingController();
   final _unitCostController = TextEditingController();
   final _salePriceController = TextEditingController();
+  
   DateTime? _restockDate;
   DateTime? _expirationDate;
-  
-  List<Map<String, dynamic>> _products = [];
+  List<Product> _products = [];
   bool _isLoading = true;
   bool _showForm = false;
-  String? _editingProductId;
+  bool _isSaving = false;
+  Product? _editingProduct;
 
   @override
   void initState() {
     super.initState();
-    _fetchProducts();
+    _loadProducts();
   }
 
-  Future<void> _fetchProducts() async {
+  Future<void> _loadProducts() async {
+    setState(() => _isLoading = true);
     try {
-      final response = await _supabase
-          .from('products')
-          .select('*')
-          .order('name', ascending: true);
-      
+      final products = await _dbService.getProducts();
       setState(() {
-        _products = List<Map<String, dynamic>>.from(response);
+        _products = products;
         _isLoading = false;
       });
     } catch (e) {
-      ScaffoldMessenger.of(context).showSnackBar(
-        SnackBar(content: Text('Error al cargar productos: ${e.toString()}')),
-      );
+      _showError('Error al cargar productos: ${e.toString()}');
       setState(() => _isLoading = false);
     }
   }
@@ -52,68 +53,61 @@ class _InventoryScreenState extends State<InventoryScreen> {
   Future<void> _saveProduct() async {
     if (!_formKey.currentState!.validate()) return;
     
-    final productData = {
-      'name': _nameController.text,
-      'quantity': int.parse(_quantityController.text),
-      'unit_cost': double.parse(_unitCostController.text),
-      'sale_price': double.parse(_salePriceController.text),
-      'restock_date': _restockDate?.toIso8601String(),
-      'expiration_date': _expirationDate?.toIso8601String(),
-      'updated_at': DateTime.now().toIso8601String(),
-    };
+    setState(() => _isSaving = true);
+    
+    final product = Product(
+      id: _editingProduct?.id ?? _uuid.v4(),
+      name: _nameController.text.trim(),
+      quantity: int.parse(_quantityController.text),
+      unitCost: double.parse(_unitCostController.text),
+      salePrice: double.parse(_salePriceController.text),
+      restockDate: _restockDate,
+      expirationDate: _expirationDate,
+      updatedAt: DateTime.now(),
+    );
 
     try {
-      if (_editingProductId != null) {
-        // Actualizar producto existente
-        await _supabase
-            .from('products')
-            .update(productData)
-            .eq('id', _editingProductId!);
+      if (_editingProduct != null) {
+        await _dbService.updateProduct(product);
       } else {
-        // Crear nuevo producto
-        await _supabase.from('products').insert(productData);
+        await _dbService.addProduct(product);
       }
       
       _resetForm();
-      _fetchProducts();
-      ScaffoldMessenger.of(context).showSnackBar(
-        SnackBar(content: Text('Producto guardado exitosamente')),
-      );
+      await _loadProducts();
+      _showSuccess(_editingProduct != null ? 'Producto actualizado' : 'Producto agregado');
     } catch (e) {
-      ScaffoldMessenger.of(context).showSnackBar(
-        SnackBar(content: Text('Error al guardar: ${e.toString()}')),
-      );
+      _showError('Error al guardar: ${e.toString()}');
+    } finally {
+      setState(() => _isSaving = false);
     }
   }
 
-  void _editProduct(Map<String, dynamic> product) {
+  void _editProduct(Product product) {
     setState(() {
-      _editingProductId = product['id'].toString();
-      _nameController.text = product['name'];
-      _quantityController.text = product['quantity'].toString();
-      _unitCostController.text = product['unit_cost'].toString();
-      _salePriceController.text = product['sale_price'].toString();
-      _restockDate = product['restock_date'] != null 
-          ? DateTime.parse(product['restock_date']) 
-          : null;
-      _expirationDate = product['expiration_date'] != null
-          ? DateTime.parse(product['expiration_date'])
-          : null;
+      _editingProduct = product;
+      _nameController.text = product.name;
+      _quantityController.text = product.quantity.toString();
+      _unitCostController.text = product.unitCost.toStringAsFixed(2);
+      _salePriceController.text = product.salePrice.toStringAsFixed(2);
+      _restockDate = product.restockDate;
+      _expirationDate = product.expirationDate;
       _showForm = true;
     });
   }
 
   Future<void> _deleteProduct(String id) async {
     try {
-      await _supabase.from('products').delete().eq('id', id);
-      _fetchProducts();
-      ScaffoldMessenger.of(context).showSnackBar(
-        SnackBar(content: Text('Producto eliminado')),
-      );
+      setState(() => _isLoading = true);
+      await _dbService.deleteProduct(id);
+      await _loadProducts();
+      _showSuccess('Producto eliminado');
     } catch (e) {
-      ScaffoldMessenger.of(context).showSnackBar(
-        SnackBar(content: Text('Error al eliminar: ${e.toString()}')),
-      );
+      _showError('Error al eliminar: ${e.toString()}');
+    } finally {
+      if (mounted) {
+        setState(() => _isLoading = false);
+      }
     }
   }
 
@@ -126,28 +120,60 @@ class _InventoryScreenState extends State<InventoryScreen> {
     setState(() {
       _restockDate = null;
       _expirationDate = null;
-      _editingProductId = null;
+      _editingProduct = null;
       _showForm = false;
     });
   }
 
-  Future<void> _selectDate(BuildContext context, bool isRestock) async {
+  Future<void> _selectDate(BuildContext context, DateType dateType) async {
     final picked = await showDatePicker(
       context: context,
       initialDate: DateTime.now(),
       firstDate: DateTime(2000),
       lastDate: DateTime(2100),
+      helpText: dateType == DateType.restock 
+          ? 'SELECCIONAR FECHA DE REABASTECIMIENTO'
+          : 'SELECCIONAR FECHA DE CADUCIDAD',
     );
     
     if (picked != null) {
       setState(() {
-        if (isRestock) {
+        if (dateType == DateType.restock) {
           _restockDate = picked;
         } else {
           _expirationDate = picked;
         }
       });
     }
+  }
+
+  void _showError(String message) {
+    ScaffoldMessenger.of(context).showSnackBar(
+      SnackBar(
+        content: Text(message),
+        backgroundColor: Colors.red,
+        behavior: SnackBarBehavior.floating,
+      ),
+    );
+  }
+
+  void _showSuccess(String message) {
+    ScaffoldMessenger.of(context).showSnackBar(
+      SnackBar(
+        content: Text(message),
+        backgroundColor: Colors.green,
+        behavior: SnackBarBehavior.floating,
+      ),
+    );
+  }
+
+  String _formatCurrency(double value) {
+    return NumberFormat.currency(symbol: '\$', decimalDigits: 2).format(value);
+  }
+
+  String _formatDate(DateTime? date) {
+    if (date == null) return 'No especificada';
+    return DateFormat('dd/MM/yyyy').format(date);
   }
 
   @override
@@ -171,6 +197,7 @@ class _InventoryScreenState extends State<InventoryScreen> {
               if (_showForm) _resetForm();
               setState(() => _showForm = !_showForm);
             },
+            tooltip: _showForm ? 'Ver lista' : 'Agregar producto',
           ),
         ],
       ),
@@ -181,9 +208,11 @@ class _InventoryScreenState extends State<InventoryScreen> {
               : _buildProductList(),
       floatingActionButton: _showForm
           ? FloatingActionButton(
-              onPressed: _saveProduct,
-              child: Icon(Icons.save),
+              onPressed: _isSaving ? null : _saveProduct,
               tooltip: 'Guardar Producto',
+              child: _isSaving 
+                  ? CircularProgressIndicator(color: Colors.white)
+                  : Icon(Icons.save),
             )
           : null,
     );
@@ -198,41 +227,82 @@ class _InventoryScreenState extends State<InventoryScreen> {
           children: [
             TextFormField(
               controller: _nameController,
-              decoration: InputDecoration(labelText: 'Nombre del Producto'),
-              validator: (value) => value?.isEmpty ?? true ? 'Campo requerido' : null,
+              decoration: InputDecoration(
+                labelText: 'Nombre del Producto',
+                border: OutlineInputBorder(),
+              ),
+              validator: (value) => value?.trim().isEmpty ?? true ? 'Campo requerido' : null,
             ),
+            SizedBox(height: 16),
             TextFormField(
               controller: _quantityController,
-              decoration: InputDecoration(labelText: 'Cantidad'),
+              decoration: InputDecoration(
+                labelText: 'Cantidad',
+                border: OutlineInputBorder(),
+              ),
               keyboardType: TextInputType.number,
-              validator: (value) => value?.isEmpty ?? true ? 'Campo requerido' : null,
+              validator: (value) {
+                if (value?.isEmpty ?? true) return 'Campo requerido';
+                final quantity = int.tryParse(value!);
+                if (quantity == null) return 'Ingrese un número válido';
+                if (quantity < 0) return 'La cantidad no puede ser negativa';
+                return null;
+              },
             ),
+            SizedBox(height: 16),
             TextFormField(
               controller: _unitCostController,
-              decoration: InputDecoration(labelText: 'Costo Unitario'),
+              decoration: InputDecoration(
+                labelText: 'Costo Unitario',
+                prefixText: '\$ ',
+                border: OutlineInputBorder(),
+              ),
               keyboardType: TextInputType.numberWithOptions(decimal: true),
-              validator: (value) => value?.isEmpty ?? true ? 'Campo requerido' : null,
+              validator: (value) {
+                if (value?.isEmpty ?? true) return 'Campo requerido';
+                final cost = double.tryParse(value!);
+                if (cost == null) return 'Ingrese un valor válido';
+                if (cost < 0) return 'El costo no puede ser negativo';
+                return null;
+              },
             ),
+            SizedBox(height: 16),
             TextFormField(
               controller: _salePriceController,
-              decoration: InputDecoration(labelText: 'Precio de Venta'),
+              decoration: InputDecoration(
+                labelText: 'Precio de Venta',
+                prefixText: '\$ ',
+                border: OutlineInputBorder(),
+              ),
               keyboardType: TextInputType.numberWithOptions(decimal: true),
-              validator: (value) => value?.isEmpty ?? true ? 'Campo requerido' : null,
+              validator: (value) {
+                if (value?.isEmpty ?? true) return 'Campo requerido';
+                final price = double.tryParse(value!);
+                if (price == null) return 'Ingrese un valor válido';
+                if (price < 0) return 'El precio no puede ser negativo';
+                
+                final cost = double.tryParse(_unitCostController.text);
+                if (cost != null && price < cost) {
+                  return 'El precio debe ser mayor al costo';
+                }
+                
+                return null;
+              },
             ),
             SizedBox(height: 20),
-            ListTile(
-              title: Text(_restockDate == null
-                  ? 'Seleccionar Fecha de Reabastecimiento'
-                  : 'Reabastecimiento: ${DateFormat('dd/MM/yyyy').format(_restockDate!)}'),
-              trailing: Icon(Icons.calendar_today),
-              onTap: () => _selectDate(context, true),
+            _buildDateTile(
+              context,
+              date: _restockDate,
+              label: 'Fecha de Reabastecimiento',
+              isRequired: true,
+              dateType: DateType.restock,
             ),
-            ListTile(
-              title: Text(_expirationDate == null
-                  ? 'Seleccionar Fecha de Caducidad (opcional)'
-                  : 'Caducidad: ${DateFormat('dd/MM/yyyy').format(_expirationDate!)}'),
-              trailing: Icon(Icons.calendar_today),
-              onTap: () => _selectDate(context, false),
+            _buildDateTile(
+              context,
+              date: _expirationDate,
+              label: 'Fecha de Caducidad (opcional)',
+              isRequired: false,
+              dateType: DateType.expiration,
             ),
           ],
         ),
@@ -240,71 +310,113 @@ class _InventoryScreenState extends State<InventoryScreen> {
     );
   }
 
-  Widget _buildProductList() {
-    return RefreshIndicator(
-      onRefresh: _fetchProducts,
-      child: ListView.builder(
-        itemCount: _products.length,
-        itemBuilder: (context, index) {
-          final product = _products[index];
-          return Card(
-            margin: EdgeInsets.symmetric(horizontal: 16, vertical: 8),
-            child: ListTile(
-              title: Text(product['name']),
-              subtitle: Column(
-                crossAxisAlignment: CrossAxisAlignment.start,
-                children: [
-                  Text('Cantidad: ${product['quantity']}'),
-                  Text('Costo: \$${product['unit_cost']?.toStringAsFixed(2) ?? '0.00'}'),
-                  Text('Precio: \$${product['sale_price']?.toStringAsFixed(2) ?? '0.00'}'),
-                  if (product['restock_date'] != null)
-                    Text('Reabastecer: ${DateFormat('dd/MM/yyyy').format(DateTime.parse(product['restock_date']))}'),
-                  if (product['expiration_date'] != null)
-                    Text('Caduca: ${DateFormat('dd/MM/yyyy').format(DateTime.parse(product['expiration_date']))}'),
-                ],
-              ),
-              trailing: Row(
-                mainAxisSize: MainAxisSize.min,
-                children: [
-                  IconButton(
-                    icon: Icon(Icons.edit, color: Colors.blue),
-                    onPressed: () => _editProduct(product),
-                  ),
-                  IconButton(
-                    icon: Icon(Icons.delete, color: Colors.red),
-                    onPressed: () => _showDeleteDialog(product['id']),
-                  ),
-                ],
-              ),
-            ),
-          );
-        },
+  Widget _buildDateTile(
+    BuildContext context, {
+    required DateTime? date,
+    required String label,
+    required bool isRequired,
+    required DateType dateType,
+  }) {
+    return Card(
+      margin: EdgeInsets.only(bottom: 16),
+      child: ListTile(
+        title: Text(
+          date == null ? label : _formatDate(date),
+          style: TextStyle(
+            color: date == null && isRequired ? Colors.grey[600] : null,
+          ),
+        ),
+        trailing: Icon(Icons.calendar_today),
+        onTap: () => _selectDate(context, dateType),
       ),
     );
   }
 
-  Future<void> _showDeleteDialog(String id) async {
-    return showDialog<void>(
-      context: context,
-      builder: (BuildContext context) {
-        return AlertDialog(
-          title: Text('Confirmar Eliminación'),
-          content: Text('¿Estás seguro de eliminar este producto?'),
-          actions: <Widget>[
-            TextButton(
-              child: Text('Cancelar'),
-              onPressed: () => Navigator.of(context).pop(),
-            ),
-            TextButton(
-              child: Text('Eliminar', style: TextStyle(color: Colors.red)),
-              onPressed: () {
-                Navigator.of(context).pop();
-                _deleteProduct(id);
+  Widget _buildProductList() {
+    return RefreshIndicator(
+      onRefresh: _loadProducts,
+      child: _products.isEmpty
+          ? Center(
+              child: Text(
+                'No hay productos registrados',
+                style: TextStyle(fontSize: 18),
+              ),
+            )
+          : ListView.builder(
+              padding: EdgeInsets.symmetric(vertical: 8),
+              itemCount: _products.length,
+              itemBuilder: (context, index) {
+                final product = _products[index];
+                final isLowStock = product.quantity < 5;
+                final isExpired = product.expirationDate != null && 
+                    product.expirationDate!.isBefore(DateTime.now());
+
+                return Dismissible(
+                  key: Key(product.id),
+                  background: Container(color: Colors.red),
+                  confirmDismiss: (direction) async {
+                    return await showDialog(
+                      context: context,
+                      builder: (context) => AlertDialog(
+                        title: Text('Confirmar'),
+                        content: Text('¿Eliminar este producto?'),
+                        actions: [
+                          TextButton(
+                            onPressed: () => Navigator.of(context).pop(false),
+                            child: Text('Cancelar'),
+                          ),
+                          TextButton(
+                            onPressed: () => Navigator.of(context).pop(true),
+                            child: Text('Eliminar', style: TextStyle(color: Colors.red)),
+                          ),
+                        ],
+                      ),
+                    );
+                  },
+                  onDismissed: (direction) => _deleteProduct(product.id),
+                  child: Card(
+                    margin: EdgeInsets.symmetric(horizontal: 16, vertical: 8),
+                    elevation: 2,
+                    color: isExpired 
+                        ? Colors.red[50] 
+                        : isLowStock 
+                            ? Colors.orange[50] 
+                            : null,
+                    child: ListTile(
+                      title: Text(
+                        product.name,
+                        style: TextStyle(
+                          fontWeight: FontWeight.bold,
+                          color: isExpired ? Colors.red : null,
+                        ),
+                      ),
+                      subtitle: Column(
+                        crossAxisAlignment: CrossAxisAlignment.start,
+                        children: [
+                          Text('Stock: ${product.quantity}'),
+                          Text('Costo: ${_formatCurrency(product.unitCost)}'),
+                          Text('Precio: ${_formatCurrency(product.salePrice)}'),
+                          if (product.restockDate != null)
+                            Text('Reabastecer: ${_formatDate(product.restockDate)}'),
+                          if (product.expirationDate != null)
+                            Text(
+                              'Caduca: ${_formatDate(product.expirationDate)}',
+                              style: TextStyle(
+                                color: isExpired ? Colors.red : null,
+                                fontWeight: isExpired ? FontWeight.bold : null,
+                              ),
+                            ),
+                        ],
+                      ),
+                      trailing: IconButton(
+                        icon: Icon(Icons.edit, color: Colors.blue),
+                        onPressed: () => _editProduct(product),
+                      ),
+                    ),
+                  ),
+                );
               },
             ),
-          ],
-        );
-      },
     );
   }
 }
