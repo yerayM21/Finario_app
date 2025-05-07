@@ -1,6 +1,6 @@
 import 'package:flutter/material.dart';
 import 'package:intl/intl.dart';
-import 'package:uuid/uuid.dart';
+// import 'package:uuid/uuid.dart'; // Uuid no se usa directamente en este archivo
 import '../models/product.dart';
 import '../models/transaction.dart';
 import '../services/DatabaseService.dart';
@@ -16,11 +16,10 @@ class _ExpensesScreenState extends State<ExpensesScreen> {
   final _amountController = TextEditingController();
   final _descriptionController = TextEditingController();
   final _quantityController = TextEditingController();
-  final Uuid _uuid = Uuid();
 
   // Variables de estado
-  String _transactionType = 'expense';
-  String? _selectedCategory = 'Suministros';
+  String _transactionType = 'expense'; // 'expense' o 'income'
+  String? _selectedCategory; // Se inicializará en initState
   String? _selectedProductId;
   DateTime _selectedDate = DateTime.now();
   List<Transaction> _transactions = [];
@@ -28,6 +27,7 @@ class _ExpensesScreenState extends State<ExpensesScreen> {
   bool _isLoading = true;
   bool _showProductFields = false;
 
+  // Mantenemos las categorías como estaban
   final Map<String, List<String>> _categories = {
     'expense': ['Compra de Inventario', 'Suministros', 'Salarios', 'Alquiler', 'Otros'],
     'income': ['Venta de Producto', 'Servicios', 'Reembolsos', 'Otros Ingresos'],
@@ -36,87 +36,123 @@ class _ExpensesScreenState extends State<ExpensesScreen> {
   @override
   void initState() {
     super.initState();
+    // CORRECCIÓN: Inicializar _selectedCategory basado en _transactionType
+    _selectedCategory = _categories[_transactionType]?.first;
     _loadInitialData();
   }
 
+  @override
+  void dispose() {
+    _amountController.dispose();
+    _descriptionController.dispose();
+    _quantityController.dispose();
+    super.dispose();
+  }
+
   Future<void> _loadInitialData() async {
+    if (!mounted) return;
     setState(() => _isLoading = true);
     try {
-      final transactions = await _dbService.getTransactions();
-      final products = await _dbService.getProducts();
-      
-      // Verificación de UUIDs válidos
-      for (final product in products) {
-        if (!_isValidUuid(product.id)) {
-          throw Exception('Producto con ID inválido: ${product.id}');
-        }
-      }
+      // Usando Record para desestructurar el resultado de Future.wait
+      final (transactions, products) = await (
+        _dbService.getTransactions(),
+        _dbService.getProducts(),
+      ).wait;
 
+      if (!mounted) return;
       setState(() {
         _transactions = transactions;
         _products = products;
         _isLoading = false;
       });
     } catch (e) {
+      if (!mounted) return;
       _showError('Error al cargar datos: ${e.toString()}');
       setState(() => _isLoading = false);
     }
   }
 
-  bool _isValidUuid(String id) {
-    return RegExp(r'^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$').hasMatch(id);
-  }
-
   Future<void> _submitTransaction() async {
     if (!_formKey.currentState!.validate()) return;
 
-    final amount = double.parse(_amountController.text);
+    final amount = double.tryParse(_amountController.text);
+    if (amount == null || amount <= 0) {
+        _showError('El monto debe ser un número positivo.');
+        return;
+    }
+    
     final isProductTransaction = _showProductFields && _selectedProductId != null;
 
     try {
       if (isProductTransaction) {
-        if (!_isValidUuid(_selectedProductId!)) {
-          throw Exception('ID de producto no válido');
-        }
-
         final product = _products.firstWhere(
           (p) => p.id == _selectedProductId,
-          orElse: () => throw Exception('Producto no encontrado')
+          // orElse no es necesario si estamos seguros que _selectedProductId es válido y está en _products
+          // La validación del DropdownButtonFormField debería asegurar que _selectedProductId es válido.
         );
 
-        final quantity = int.parse(_quantityController.text);
+        final quantity = int.tryParse(_quantityController.text);
+        if (quantity == null || quantity <= 0) {
+          _showError('La cantidad del producto debe ser un número entero positivo.');
+          return;
+        }
 
         if (_transactionType == 'income') {
+          // MEJORA: Validación de stock en el cliente
+          if (product.quantity < quantity) {
+            _showError('Stock insuficiente para ${product.name}. Stock actual: ${product.quantity}');
+            return;
+          }
           await _dbService.registerSale(
             product: product,
             quantity: quantity,
           );
-        } else {
+        } else { // 'expense'
+          // Con la UI mejorada, _selectedCategory debería ser 'Compra de Inventario'
+          if (_selectedCategory != 'Compra de Inventario') {
+             // Este error ahora es más una salvaguarda interna
+            _showError('Error interno: La categoría para compra de producto no es "Compra de Inventario".');
+            return;
+          }
           await _dbService.registerPurchase(
             product: product,
             quantity: quantity,
-            unitCost: amount / quantity,
+            unitCost: amount / quantity, // 'amount' es el costo total
           );
         }
-      } else {
-        await _dbService.addTransaction(
-          Transaction(
-            type: _transactionType,
-            amount: _transactionType == 'income' ? amount : -amount,
+      } else { // Transacción genérica
+        if (_selectedCategory == null || _descriptionController.text.isEmpty) {
+             _showError('Descripción y categoría son requeridas para transacciones genéricas.');
+            return;
+        }
+        if (_transactionType == 'income') {
+          await _dbService.registerGenericIncome(
+            amount: amount,
             description: _descriptionController.text,
             category: _selectedCategory!,
-            productId: null,
-            quantity: null,
             date: _selectedDate,
-          ),
-        );
+          );
+        } else { // 'expense'
+          await _dbService.registerGenericExpense(
+            amount: amount,
+            description: _descriptionController.text,
+            category: _selectedCategory!,
+            date: _selectedDate,
+          );
+        }
       }
 
       _resetForm();
-      await _loadInitialData();
+      await _loadInitialData(); // Recargar datos después de la transacción
       _showSuccess('Transacción registrada exitosamente');
     } catch (e) {
-      _showError('Error: ${e.toString()}');
+      // Simplificar el mensaje de error si es una excepción de la base de datos
+      String errorMessage = e.toString();
+      if (e is Exception) {
+          final message = e.toString().replaceFirst('Exception: ', '');
+          errorMessage = message;
+      }
+      _showError('Error al registrar transacción: $errorMessage');
     }
   }
 
@@ -125,9 +161,18 @@ class _ExpensesScreenState extends State<ExpensesScreen> {
     _amountController.clear();
     _descriptionController.clear();
     _quantityController.clear();
+    if (!mounted) return;
     setState(() {
       _selectedProductId = null;
-      _showProductFields = false;
+      // _showProductFields se mantiene, el usuario decide si la siguiente es de producto
+      // _transactionType se mantiene
+      // _selectedCategory se ajusta según _transactionType y _showProductFields
+      if (_showProductFields) {
+        _selectedCategory = (_transactionType == 'expense') ? 'Compra de Inventario' : 'Venta de Producto';
+      } else {
+        _selectedCategory = _categories[_transactionType]?.first;
+      }
+      _selectedDate = DateTime.now();
     });
   }
 
@@ -136,14 +181,18 @@ class _ExpensesScreenState extends State<ExpensesScreen> {
       context: context,
       initialDate: _selectedDate,
       firstDate: DateTime(2000),
-      lastDate: DateTime.now(),
+      lastDate: DateTime.now().add(Duration(days: 365)), // Permitir fechas futuras si es necesario
     );
-    if (picked != null) {
-      setState(() => _selectedDate = picked);
+    if (picked != null && picked != _selectedDate) {
+      if (!mounted) return;
+      setState(() {
+        _selectedDate = picked;
+      });
     }
   }
 
   void _showError(String message) {
+    if (!mounted) return;
     ScaffoldMessenger.of(context).showSnackBar(
       SnackBar(
         content: Text(message),
@@ -154,6 +203,7 @@ class _ExpensesScreenState extends State<ExpensesScreen> {
   }
 
   void _showSuccess(String message) {
+    if (!mounted) return;
     ScaffoldMessenger.of(context).showSnackBar(
       SnackBar(
         content: Text(message),
@@ -165,6 +215,7 @@ class _ExpensesScreenState extends State<ExpensesScreen> {
 
   @override
   Widget build(BuildContext context) {
+    // Calcular el balance aquí para asegurar que se actualiza con _transactions
     final balance = _transactions.fold(0.0, (sum, t) => sum + t.amount);
 
     return Scaffold(
@@ -173,7 +224,7 @@ class _ExpensesScreenState extends State<ExpensesScreen> {
         actions: [
           IconButton(
             icon: Icon(Icons.refresh),
-            onPressed: _loadInitialData,
+            onPressed: _isLoading ? null : _loadInitialData, // Deshabilitar si ya está cargando
           ),
         ],
       ),
@@ -184,6 +235,7 @@ class _ExpensesScreenState extends State<ExpensesScreen> {
                 _buildBalanceCard(balance),
                 Expanded(
                   child: ListView(
+                    padding: EdgeInsets.all(8.0), // Añadir padding general
                     children: [
                       _buildTransactionForm(),
                       SizedBox(height: 20),
@@ -207,13 +259,10 @@ class _ExpensesScreenState extends State<ExpensesScreen> {
           children: [
             Text(
               'Balance Actual:',
-              style: TextStyle(
-                fontSize: 18,
-                fontWeight: FontWeight.bold,
-              ),
+              style: TextStyle(fontSize: 18, fontWeight: FontWeight.bold),
             ),
             Text(
-              '\$${balance.toStringAsFixed(2)}',
+              NumberFormat.currency(locale: 'es_MX', symbol: '\$').format(balance), // Formato de moneda
               style: TextStyle(
                 fontSize: 20,
                 fontWeight: FontWeight.bold,
@@ -227,8 +276,15 @@ class _ExpensesScreenState extends State<ExpensesScreen> {
   }
 
   Widget _buildTransactionForm() {
+    // MEJORA: Determinar si el dropdown de categoría debe estar habilitado
+    final bool isCategoryDropdownEnabled = !_showProductFields;
+    final String? currentCategoryLabel = _showProductFields
+        ? (_transactionType == 'expense' ? 'Compra de Inventario' : 'Venta de Producto')
+        : _selectedCategory;
+
     return Card(
-      margin: EdgeInsets.symmetric(horizontal: 12),
+      margin: EdgeInsets.symmetric(horizontal: 4, vertical: 8), // Ajuste de margen
+      elevation: 2,
       child: Padding(
         padding: EdgeInsets.all(16),
         child: Form(
@@ -236,23 +292,13 @@ class _ExpensesScreenState extends State<ExpensesScreen> {
           child: Column(
             crossAxisAlignment: CrossAxisAlignment.stretch,
             children: [
-              Text(
-                'Nueva Transacción',
-                style: TextStyle(
-                  fontSize: 18,
-                  fontWeight: FontWeight.bold,
-                ),
-              ),
+              Text('Nueva Transacción', style: Theme.of(context).textTheme.titleLarge),
               SizedBox(height: 16),
               Row(
                 children: [
-                  Expanded(
-                    child: _buildTransactionTypeButton('Gasto', 'expense'),
-                  ),
-                  SizedBox(width: 16),
-                  Expanded(
-                    child: _buildTransactionTypeButton('Ingreso', 'income'),
-                  ),
+                  Expanded(child: _buildTransactionTypeButton('Gasto', 'expense')),
+                  SizedBox(width: 10),
+                  Expanded(child: _buildTransactionTypeButton('Ingreso', 'income')),
                 ],
               ),
               SizedBox(height: 16),
@@ -264,37 +310,69 @@ class _ExpensesScreenState extends State<ExpensesScreen> {
                   border: OutlineInputBorder(),
                 ),
                 keyboardType: TextInputType.numberWithOptions(decimal: true),
-                validator: (value) => value?.isEmpty ?? true ? 'Requerido' : null,
+                validator: (value) {
+                  if (value == null || value.isEmpty) return 'Requerido';
+                  final val = double.tryParse(value);
+                  if (val == null) return 'Monto inválido';
+                  if (val <= 0) return 'El monto debe ser positivo';
+                  return null;
+                },
               ),
               SizedBox(height: 16),
-              TextFormField(
-                controller: _descriptionController,
-                decoration: InputDecoration(
-                  labelText: 'Descripción',
-                  border: OutlineInputBorder(),
+              // La descripción es opcional para compras/ventas de producto (se autogenera)
+              // pero requerida para genéricos.
+              if (!_showProductFields)
+                TextFormField(
+                  controller: _descriptionController,
+                  decoration: InputDecoration(
+                    labelText: 'Descripción',
+                    border: OutlineInputBorder(),
+                  ),
+                  validator: (value) => 
+                    !_showProductFields && (value == null || value.isEmpty) ? 'Requerido para genéricos' : null,
                 ),
-                validator: (value) => value?.isEmpty ?? true ? 'Requerido' : null,
-              ),
-              SizedBox(height: 16),
+              if (!_showProductFields) SizedBox(height: 16),
+
+              // Dropdown de Categoría
               DropdownButtonFormField<String>(
-                value: _selectedCategory,
-                items: _categories[_transactionType]!.map((category) {
+                value: currentCategoryLabel, // Usar el label actual
+                items: (_categories[_transactionType] ?? []).map((category) {
                   return DropdownMenuItem(
                     value: category,
                     child: Text(category),
                   );
                 }).toList(),
-                onChanged: (value) => setState(() => _selectedCategory = value),
+                onChanged: isCategoryDropdownEnabled
+                    ? (value) => setState(() => _selectedCategory = value)
+                    : null, // Deshabilitado si _showProductFields es true
                 decoration: InputDecoration(
                   labelText: 'Categoría',
                   border: OutlineInputBorder(),
+                  filled: !isCategoryDropdownEnabled,
+                  fillColor: !isCategoryDropdownEnabled ? Colors.grey[200] : null,
                 ),
+                validator: (value) => value == null ? 'Seleccione una categoría' : null,
               ),
               SizedBox(height: 16),
               SwitchListTile(
-                title: Text('¿Vinculado a producto?'),
+                title: Text('¿Vincular a producto de inventario?'),
                 value: _showProductFields,
-                onChanged: (value) => setState(() => _showProductFields = value),
+                onChanged: (newValue) {
+                  setState(() {
+                    _showProductFields = newValue;
+                    _quantityController.clear(); // Limpiar cantidad al cambiar
+                    _selectedProductId = null; // Deseleccionar producto
+                    if (newValue) { // Si se activan los campos de producto
+                      _descriptionController.clear(); // Descripción es automática para productos
+                      _selectedCategory = (_transactionType == 'expense')
+                          ? 'Compra de Inventario'
+                          : 'Venta de Producto';
+                    } else { // Si se desactivan (transacción genérica)
+                      _selectedCategory = _categories[_transactionType]?.first;
+                    }
+                  });
+                },
+                activeColor: Theme.of(context).colorScheme.primary,
               ),
               if (_showProductFields) ...[
                 SizedBox(height: 16),
@@ -311,19 +389,25 @@ class _ExpensesScreenState extends State<ExpensesScreen> {
                     labelText: 'Producto',
                     border: OutlineInputBorder(),
                   ),
-                  validator: (value) => _showProductFields && value == null ? 'Seleccione un producto' : null,
+                  validator: (value) => _showProductFields && value == null
+                      ? 'Seleccione un producto'
+                      : null,
                 ),
                 SizedBox(height: 16),
                 TextFormField(
                   controller: _quantityController,
                   decoration: InputDecoration(
-                    labelText: 'Cantidad',
+                    labelText: 'Cantidad de Producto',
                     border: OutlineInputBorder(),
                   ),
                   keyboardType: TextInputType.number,
+                  // CORRECCIÓN: Validador de cantidad mejorado
                   validator: (value) {
-                    if (_showProductFields && (value?.isEmpty ?? true)) return 'Requerido';
-                    if (_showProductFields && int.tryParse(value ?? '0') == 0) return 'Cantidad inválida';
+                    if (!_showProductFields) return null; // No validar si no se muestra
+                    if (value == null || value.isEmpty) return 'Requerido';
+                    final quantity = int.tryParse(value);
+                    if (quantity == null) return 'Cantidad debe ser un número';
+                    if (quantity <= 0) return 'Cantidad debe ser positiva';
                     return null;
                   },
                 ),
@@ -331,22 +415,18 @@ class _ExpensesScreenState extends State<ExpensesScreen> {
               SizedBox(height: 16),
               ListTile(
                 title: Text('Fecha: ${DateFormat('dd/MM/yyyy').format(_selectedDate)}'),
-                trailing: IconButton(
-                  icon: Icon(Icons.calendar_today),
-                  onPressed: () => _selectDate(context),
-                ),
+                trailing: Icon(Icons.calendar_today),
+                onTap: () => _selectDate(context),
               ),
-              SizedBox(height: 16),
+              SizedBox(height: 20),
               ElevatedButton(
-                onPressed: _submitTransaction,
+                onPressed: _isLoading ? null : _submitTransaction,
                 style: ElevatedButton.styleFrom(
-                  minimumSize: Size(double.infinity, 50),
                   padding: EdgeInsets.symmetric(vertical: 12),
+                  textStyle: TextStyle(fontSize: 16),
+                  minimumSize: Size(double.infinity, 50),
                 ),
-                child: Text(
-                  'Registrar Transacción',
-                  style: TextStyle(fontSize: 16),
-                ),
+                child: _isLoading ? SizedBox(height: 20, width: 20, child: CircularProgressIndicator(strokeWidth: 3, color: Colors.white)) : Text('Registrar Transacción'),
               ),
             ],
           ),
@@ -355,107 +435,95 @@ class _ExpensesScreenState extends State<ExpensesScreen> {
     );
   }
 
-  Widget _buildTransactionTypeButton(String label, String value) {
-    return OutlinedButton(
-      style: OutlinedButton.styleFrom(
-        backgroundColor: _transactionType == value ? Colors.blue[50] : null,
+  Widget _buildTransactionTypeButton(String label, String typeValue) {
+    final bool isActive = _transactionType == typeValue;
+    return ElevatedButton(
+      style: ElevatedButton.styleFrom(
+        backgroundColor: isActive ? Theme.of(context).colorScheme.primary : Colors.grey[300],
+        foregroundColor: isActive ? Theme.of(context).colorScheme.onPrimary : Colors.black87,
         side: BorderSide(
-          color: _transactionType == value ? Colors.blue : Colors.grey,
+          color: isActive ? Theme.of(context).colorScheme.primary : Colors.grey,
         ),
         padding: EdgeInsets.symmetric(vertical: 12),
       ),
       onPressed: () {
+        if (_transactionType == typeValue) return; // No hacer nada si ya está seleccionado
         setState(() {
-          _transactionType = value;
-          _selectedCategory = _categories[value]?.first;
+          _transactionType = typeValue;
+          // MEJORA: Ajustar categoría al cambiar tipo
+          if (_showProductFields) {
+            _selectedCategory = (typeValue == 'expense')
+                ? 'Compra de Inventario'
+                : 'Venta de Producto';
+          } else {
+            _selectedCategory = _categories[typeValue]?.first;
+          }
         });
       },
-      child: Text(
-        label,
-        style: TextStyle(
-          color: _transactionType == value ? Colors.blue : Colors.grey,
-        ),
-      ),
+      child: Text(label),
     );
   }
 
-  Widget _buildTransactionList() {
+ Widget _buildTransactionList() {
+    if (_transactions.isEmpty) {
+      return Padding(
+        padding: const EdgeInsets.all(16.0),
+        child: Center(child: Text('No hay transacciones registradas.', style: TextStyle(fontSize: 16, color: Colors.grey[600]))),
+      );
+    }
     return Column(
       crossAxisAlignment: CrossAxisAlignment.start,
       children: [
         Padding(
-          padding: EdgeInsets.symmetric(horizontal: 16),
-          child: Text(
-            'Historial',
-            style: TextStyle(
-              fontSize: 18,
-              fontWeight: FontWeight.bold,
-            ),
-          ),
+          padding: EdgeInsets.symmetric(horizontal: 16, vertical: 8),
+          child: Text('Historial de Transacciones', style: Theme.of(context).textTheme.titleLarge),
         ),
-        SizedBox(height: 8),
         ListView.separated(
           shrinkWrap: true,
           physics: NeverScrollableScrollPhysics(),
           itemCount: _transactions.length,
-          separatorBuilder: (context, index) => Divider(height: 1),
+          separatorBuilder: (context, index) => Divider(height: 1, indent: 16, endIndent: 16),
           itemBuilder: (context, index) {
             final transaction = _transactions[index];
-            final product = transaction.productId != null
-                ? _products.firstWhere(
-                    (p) => p.id == transaction.productId,
-                    orElse: () => Product(
-                      id: '',
-                      name: 'Producto eliminado',
-                      quantity: 0,
-                      unitCost: 0,
-                      salePrice: 0,
-                      updatedAt: DateTime.now(),
-                    ),
-                  )
-                : null;
+            // El nombre del producto ya viene en transaction.productName si el join funcionó
+            final String? displayProductName = transaction.productName;
 
             return ListTile(
-              contentPadding: EdgeInsets.symmetric(horizontal: 16),
-              leading: Container(
-                padding: EdgeInsets.all(8),
-                decoration: BoxDecoration(
-                  color: transaction.type == 'income'
-                      ? Colors.green[50]
-                      : Colors.red[50],
-                  shape: BoxShape.circle,
-                ),
+              contentPadding: EdgeInsets.symmetric(horizontal: 16, vertical: 4),
+              leading: CircleAvatar(
+                backgroundColor: transaction.amount >= 0 ? Colors.green.shade100 : Colors.red.shade100,
                 child: Icon(
-                  transaction.type == 'income'
-                      ? Icons.arrow_upward
-                      : Icons.arrow_downward,
-                  color: transaction.type == 'income'
-                      ? Colors.green
-                      : Colors.red,
+                  transaction.amount >= 0 ? Icons.arrow_upward : Icons.arrow_downward,
+                  color: transaction.amount >= 0 ? Colors.green.shade700 : Colors.red.shade700,
+                  size: 20,
                 ),
               ),
-              title: Text(transaction.description),
+              title: Text(
+                transaction.description,
+                style: TextStyle(fontWeight: FontWeight.w500),
+                maxLines: 2,
+                overflow: TextOverflow.ellipsis,
+              ),
               subtitle: Column(
                 crossAxisAlignment: CrossAxisAlignment.start,
                 children: [
-                  if (product != null)
-                    Text(
-                      '${product.name}${transaction.quantity != null ? ' (x${transaction.quantity})' : ''}',
-                      style: TextStyle(fontSize: 12),
-                    ),
                   Text(
-                    '${transaction.category} • ${DateFormat('dd/MM/yyyy').format(transaction.date)}',
-                    style: TextStyle(fontSize: 12),
+                    '${transaction.category} • ${DateFormat('dd/MM/yyyy, hh:mm a').format(transaction.date)}',
+                    style: TextStyle(fontSize: 12, color: Colors.grey[700]),
                   ),
+                  if (displayProductName != null)
+                    Text(
+                      'Producto: $displayProductName${transaction.quantity != null ? " (x${transaction.quantity})" : ""}',
+                      style: TextStyle(fontSize: 12, fontStyle: FontStyle.italic),
+                    ),
                 ],
               ),
               trailing: Text(
-                '${transaction.type == 'income' ? '+' : '-'}\$${transaction.amount.abs().toStringAsFixed(2)}',
+                NumberFormat.currency(locale: 'es_MX', symbol: '\$').format(transaction.amount),
                 style: TextStyle(
                   fontWeight: FontWeight.bold,
-                  color: transaction.type == 'income'
-                      ? Colors.green
-                      : Colors.red,
+                  fontSize: 15,
+                  color: transaction.amount >= 0 ? Colors.green.shade800 : Colors.red.shade800,
                 ),
               ),
             );

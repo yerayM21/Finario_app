@@ -7,8 +7,10 @@ class Transaction {
   final String description;
   final String category;
   final String? productId;
+  final String? productName;
   final int? quantity;
   final DateTime date;
+  final DateTime createdAt;
 
   Transaction({
     String? id,
@@ -17,20 +19,25 @@ class Transaction {
     required this.description,
     required this.category,
     this.productId,
+    this.productName,
     this.quantity,
     required this.date,
-  }) : id = id ?? Uuid().v4();
+    DateTime? createdAt,
+  })  : id = id ?? Uuid().v4(),
+        createdAt = createdAt ?? DateTime.now();
 
   factory Transaction.fromMap(Map<String, dynamic> map) {
     return Transaction(
-      id: map['id'] as String,
-      type: map['type'] as String,
+      id: map['id'],
+      type: map['type'],
       amount: (map['amount'] as num).toDouble(),
-      description: map['description'] as String,
-      category: map['category'] as String,
-      productId: map['product_id'] as String?,
-      quantity: map['quantity'] as int?,
+      description: map['description'],
+      category: map['category'],
+      productId: map['product_id'],
+      productName: map['products'] != null ? map['products']['name'] : null,
+      quantity: map['quantity'],
       date: DateTime.parse(map['date']),
+      createdAt: DateTime.parse(map['created_at']),
     );
   }
 
@@ -44,6 +51,7 @@ class Transaction {
       'product_id': productId,
       'quantity': quantity,
       'date': date.toIso8601String(),
+      'created_at': createdAt.toIso8601String(),
     };
   }
 }
