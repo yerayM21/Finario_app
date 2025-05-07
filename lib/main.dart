@@ -4,7 +4,9 @@ import 'package:finario/screens/management_screen.dart';
 import 'package:finario/screens/profit_screen.dart';
 import 'package:finario/screens/reports_screen.dart';
 import 'package:flutter/material.dart';
+import 'package:flutter_dotenv/flutter_dotenv.dart';
 import 'package:supabase_flutter/supabase_flutter.dart';
+import 'package:finario/models/enviroment.dart';
 import 'auth/auth_provider.dart';
 import 'screens/login_screens.dart';
 import 'screens/register_screen.dart';
@@ -14,9 +16,11 @@ import 'screens/home_screen.dart';
 void main() async {
   WidgetsFlutterBinding.ensureInitialized();
 
+  await dotenv.load(fileName: Environment.fileName );
+
   await Supabase.initialize(
-   url:'https://whammcussaseczrqnngg.supabase.co', 
-   anonKey: 'eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6IndoYW1tY3Vzc2FzZWN6cnFubmdnIiwicm9sZSI6ImFub24iLCJpYXQiOjE3NDM5NTk0NDgsImV4cCI6MjA1OTUzNTQ0OH0.pf6ZD6QuskWAE7ChOxZLt9nRAvJfGyXSwTIzZcTGnJU'
+   url: "${Environment.apiBaseUrl}", 
+   anonKey: "${Environment.apiKey}"
    );
 
    runApp(const Finario());
