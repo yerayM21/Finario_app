@@ -1,9 +1,11 @@
 import 'package:flutter/material.dart';
 import 'package:intl/intl.dart';
 // import 'package:uuid/uuid.dart'; // No se usa directamente
-import '../models/product.dart'; // Asegúrate que la ruta es correcta
-import '../models/transaction.dart'; // Asegúrate que la ruta es correcta
-import '../services/DatabaseService.dart'; // Asegúrate que la ruta es correcta
+import '../models/product.dart';
+import '../models/transaction.dart';
+import '../models/customer.dart'; // Importa el modelo Customer
+import '../services/DatabaseService.dart';
+import '../models/customer_receivable.dart';
 
 class ExpensesScreen extends StatefulWidget {
   @override
@@ -26,6 +28,13 @@ class _ExpensesScreenState extends State<ExpensesScreen> {
   List<Product> _products = [];
   bool _isLoading = true;
   bool _showProductFields = false;
+
+  // Estado para la venta a crédito
+  bool _isCreditSale = false;
+  Customer? _selectedCustomerForCredit;
+  DateTime? _creditDueDate;
+  List<Customer> _customers = [];
+  bool _isLoadingCustomers = false;
 
   final Map<String, List<String>> _categories = {
     'expense': ['Compra de Inventario', 'Suministros', 'Salarios', 'Alquiler', 'Otros'],
@@ -56,16 +65,20 @@ class _ExpensesScreenState extends State<ExpensesScreen> {
         _dbService.getProducts(),
       ).wait;
 
-      if (!mounted) return;
       setState(() {
         _transactions = transactions;
         _products = products;
         _isLoading = false;
       });
+
+      setState(() => _isLoadingCustomers = true);
+      _customers = await _dbService.getCustomers();
     } catch (e) {
       if (!mounted) return;
       _showError('Error al cargar datos: ${e.toString().replaceFirst("Exception: ", "")}');
       setState(() => _isLoading = false);
+    } finally {
+      if (mounted) setState(() => _isLoadingCustomers = false);
     }
   }
 
@@ -108,6 +121,29 @@ class _ExpensesScreenState extends State<ExpensesScreen> {
             productName: product.name, // Pasar productName como String
             quantity: quantity,
           );
+
+          // *** Lógica para Venta a Crédito ***
+          if (_isCreditSale) {
+            if (_selectedCustomerForCredit == null || _creditDueDate == null) {
+              _showError('Por favor, seleccione un cliente y una fecha de vencimiento para la venta a crédito.');
+              setState(() => _isLoading = false);
+              return;
+            }
+
+            final receivable = CustomerReceivable(
+              saleTransactionId: transactionId!,
+              customerId: _selectedCustomerForCredit!.id!,
+              issueDate: _selectedDate,
+              dueDate: _creditDueDate!,
+              totalDue: product.salePrice * quantity,
+              paymentTerms: 'A crédito', // Puedes hacerlo más dinámico si lo deseas
+              notes: 'Venta a crédito registrada desde la pantalla de transacciones.',
+            );
+            await _dbService.addCustomerReceivable(receivable);
+            _showSuccess('Venta a crédito registrada y cuenta por cobrar creada.');
+          } else {
+            _showSuccess('Venta de producto registrada.');
+          }
         } else { // Compra de producto ('expense')
           if (_selectedCategory != 'Compra de Inventario') {
             _showError('Error interno: La categoría para compra de producto no es "Compra de Inventario".');
@@ -121,6 +157,7 @@ class _ExpensesScreenState extends State<ExpensesScreen> {
             quantity: quantity,
             unitCost: amount / quantity, // 'amount' es el costo total de la compra para esta UI
           );
+          _showSuccess('Compra de producto registrada.');
         }
       } else { // Transacción genérica
         if (_selectedCategory == null || _descriptionController.text.isEmpty) {
@@ -137,6 +174,7 @@ class _ExpensesScreenState extends State<ExpensesScreen> {
             date: _selectedDate,
           );
           transactionId = genericTx.id;
+          _showSuccess('Ingreso registrado.');
         } else { // 'expense'
           final genericTx = await _dbService.registerGenericExpense(
             amount: amount,
@@ -145,12 +183,12 @@ class _ExpensesScreenState extends State<ExpensesScreen> {
             date: _selectedDate,
           );
           transactionId = genericTx.id;
+          _showSuccess('Gasto registrado.');
         }
       }
 
       _resetForm();
       await _loadInitialData(); // Recarga los datos, lo que ya quita el _isLoading
-      _showSuccess('Transacción registrada exitosamente${transactionId != null ? " (ID: ${transactionId.substring(0,8)}...)" : ""}');
     } catch (e) {
       String errorMessage = e.toString();
       if (errorMessage.startsWith('Exception: ')) {
@@ -172,8 +210,10 @@ class _ExpensesScreenState extends State<ExpensesScreen> {
     if (!mounted) return;
     setState(() {
       _selectedProductId = null;
-      // _showProductFields se mantiene, el usuario decide si la siguiente es de producto
-      // _transactionType se mantiene
+      _showProductFields = false;
+      _isCreditSale = false;
+      _selectedCustomerForCredit = null;
+      _creditDueDate = null;
       if (_showProductFields) {
         _selectedCategory = (_transactionType == 'expense') ? 'Compra de Inventario' : 'Venta de Producto';
       } else {
@@ -365,6 +405,9 @@ class _ExpensesScreenState extends State<ExpensesScreen> {
                     _showProductFields = newValue;
                     _quantityController.clear();
                     _selectedProductId = null;
+                    _isCreditSale = false;
+                    _selectedCustomerForCredit = null;
+                    _creditDueDate = null;
                     if (newValue) {
                       _descriptionController.clear();
                       _selectedCategory = (_transactionType == 'expense')
@@ -420,6 +463,77 @@ class _ExpensesScreenState extends State<ExpensesScreen> {
                     return null;
                   },
                 ),
+              ],
+              if (_showProductFields && _transactionType == 'income') ...[
+                SizedBox(height: 16),
+                SwitchListTile(
+                  title: Text('¿Venta a Crédito?'),
+                  value: _isCreditSale,
+                  onChanged: (newValue) {
+                    setState(() {
+                      _isCreditSale = newValue;
+                      if (!newValue) {
+                        _selectedCustomerForCredit = null;
+                        _creditDueDate = null;
+                      }
+                    });
+                  },
+                  activeColor: Theme.of(context).colorScheme.primary,
+                ),
+                if (_isCreditSale) ...[
+                  SizedBox(height: 16),
+                  _isLoadingCustomers
+                      ? CircularProgressIndicator()
+                      : _customers.isEmpty
+                          ? Text("No hay clientes registrados.")
+                          : DropdownButtonFormField<Customer>(
+                              value: _selectedCustomerForCredit,
+                              items: _customers.map((customer) {
+                                return DropdownMenuItem<Customer>(
+                                  value: customer,
+                                  child: Text(customer.name),
+                                );
+                              }).toList(),
+                              onChanged: (Customer? newValue) {
+                                setState(() {
+                                  _selectedCustomerForCredit = newValue;
+                                });
+                              },
+                              decoration: InputDecoration(
+                                labelText: 'Cliente (Venta a Crédito)',
+                                border: OutlineInputBorder(),
+                              ),
+                              validator: (value) => _isCreditSale && value == null
+                                  ? 'Seleccione un cliente'
+                                  : null,
+                            ),
+                  SizedBox(height: 16),
+                  ListTile(
+                    title: Text(_creditDueDate == null
+                        ? 'Seleccionar Fecha de Vencimiento'
+                        : 'Fecha de Vencimiento: ${DateFormat('dd/MM/yyyy').format(_creditDueDate!)}'),
+                    trailing: Icon(Icons.calendar_today),
+                    onTap: () async {
+                      final pickedDate = await showDatePicker(
+                        context: context,
+                        initialDate: _creditDueDate ?? DateTime.now().add(Duration(days: 30)),
+                        firstDate: DateTime.now(),
+                        lastDate: DateTime.now().add(Duration(days: 365)),
+                      );
+                      if (pickedDate != null) {
+                        setState(() {
+                          _creditDueDate = pickedDate;
+                        });
+                      }
+                    },
+                  ),
+                  if (_isCreditSale && _creditDueDate == null)
+                    Padding(
+                      padding: const EdgeInsets.only(top: 8.0),
+                      child: Text('Por favor, seleccione la fecha de vencimiento.',
+                          style: TextStyle(color: Colors.red)),
+                    ),
+                ],
               ],
               SizedBox(height: 16),
               ListTile(

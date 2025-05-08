@@ -1,5 +1,5 @@
 // Asegúrate de tener el helper o define el enumFromString aquí
-import '../utils/enum_helpers.dart'; 
+import '../utils/enum_helpers.dart';
 
 enum CustomerType {
   frequent,

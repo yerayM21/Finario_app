@@ -1,4 +1,4 @@
-import '../utils/enum_helpers.dart'; 
+import '../utils/enum_helpers.dart';
 import './supplier_invoice.dart'; // Si usas el mismo InvoiceStatus
 
 class CustomerReceivable {
