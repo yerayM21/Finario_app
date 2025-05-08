@@ -1,9 +1,10 @@
 import 'package:supabase_flutter/supabase_flutter.dart';
 import 'package:uuid/uuid.dart';
+import 'package:intl/intl.dart'; // Asegúrate que esta importación esté presente
 
 // Importa tus modelos aquí. Asegúrate que las rutas y nombres de archivo sean correctos.
 import '../models/product.dart';
-import '../models/transaction.dart';
+import '../models/transaction.dart'; // Tu modelo de Transaction
 import '../models/supplier.dart';
 import '../models/customer.dart';
 import '../models/supplier_product_info.dart';
@@ -50,7 +51,7 @@ class DatabaseService {
     }
     final response = await _supabase
         .from('products')
-        .insert(product.toMapAllFields()) 
+        .insert(product.toMapAllFields())
         .select()
         .single();
     return Product.fromMap(response);
@@ -62,7 +63,7 @@ class DatabaseService {
     }
     final response = await _supabase
         .from('products')
-        .update(product.toMapForUpdate()) 
+        .update(product.toMapForUpdate())
         .eq('id', product.id!)
         .select()
         .single();
@@ -76,29 +77,27 @@ class DatabaseService {
 
   // ==================== TRANSACCIONES ====================
   Future<List<Transaction>> getTransactions({String? productId}) async {
-    // CORRECCIÓN AQUÍ: Aplicar filtros antes de .order()
     PostgrestFilterBuilder<List<Map<String, dynamic>>> queryBuilder = _supabase
         .from('transactions')
         .select('*, products(name)');
-    
+
     if (productId != null && isValidUuid(productId)) {
       queryBuilder = queryBuilder.eq('product_id', productId);
     }
 
-    // Aplicar .order() después de todos los filtros
     final response = await queryBuilder.order('date', ascending: false);
     return (response).map((item) => Transaction.fromMap(item)).toList();
   }
-  
+
   Future<Transaction?> getTransactionById(String transactionId) async {
     if (!isValidUuid(transactionId)) throw ArgumentError('ID de transacción no válido');
-    
+
     final response = await _supabase
         .from('transactions')
         .select('*, products(name)')
         .eq('id', transactionId)
         .maybeSingle();
-    
+
     return response != null ? Transaction.fromMap(response) : null;
   }
 
@@ -109,10 +108,10 @@ class DatabaseService {
     if (transaction.productId != null && !isValidUuid(transaction.productId)) {
       throw ArgumentError('ID de producto no válido en la transacción');
     }
-    
+
     final response = await _supabase
         .from('transactions')
-        .insert(transaction.toMap()) 
+        .insert(transaction.toMap())
         .select()
         .single();
     return Transaction.fromMap(response);
@@ -121,6 +120,35 @@ class DatabaseService {
   Future<void> deleteTransaction(String id) async {
     if (!isValidUuid(id)) throw ArgumentError('ID de transacción no válido');
     await _supabase.from('transactions').delete().eq('id', id);
+  }
+
+  // NUEVA FUNCIÓN PARA REPORTES
+  Future<List<Transaction>> getTransactionsByDateRangeAndTypes({
+    required DateTime startDate,
+    required DateTime endDate,
+    List<String>? types, // Ej: ['sale', 'generic_income', 'generic_expense']
+  }) async {
+    String formattedStartDate = DateFormat("yyyy-MM-ddTHH:mm:ss'Z'").format(
+        DateTime(startDate.year, startDate.month, startDate.day, 0, 0, 0, 0, 0).toUtc()
+    );
+    String formattedEndDate = DateFormat("yyyy-MM-ddTHH:mm:ss'Z'").format(
+        DateTime(endDate.year, endDate.month, endDate.day, 23, 59, 59, 999, 999).toUtc()
+    );
+
+    var queryBuilder = _supabase
+        .from('transactions')
+        .select('*, products(name)')
+        .gte('date', formattedStartDate)
+        .lte('date', formattedEndDate);
+
+    if (types != null && types.isNotEmpty) {
+      final typesString = '(${types.map((t) => '"$t"').join(',')})';
+      queryBuilder = queryBuilder.filter('type', 'in', typesString);
+    }
+    
+    final response = await queryBuilder.order('date', ascending: false);
+    
+    return (response as List).map((item) => Transaction.fromMap(item)).toList();
   }
 
   // ==================== PROVEEDORES (Suppliers) ====================
@@ -145,7 +173,7 @@ class DatabaseService {
   Future<Supplier> addSupplier(Supplier supplier) async {
     final response = await _supabase
         .from('suppliers')
-        .insert(supplier.toMapForInsert()) 
+        .insert(supplier.toMapForInsert())
         .select()
         .single();
     return Supplier.fromMap(response);
@@ -172,11 +200,10 @@ class DatabaseService {
   // ==================== INFORMACIÓN DE PRODUCTOS POR PROVEEDOR ====================
   Future<List<SupplierProductInfo>> getSupplierProductInfoForSupplier(String supplierId) async {
     if (!isValidUuid(supplierId)) throw ArgumentError('ID de proveedor no válido');
-    // No hay .order() aquí, por lo que .eq() funciona directamente después de .select()
     final response = await _supabase
         .from('supplier_product_info')
         .select('*, products(id, name, sale_price)')
-        .eq('supplier_id', supplierId); // Esto está bien
+        .eq('supplier_id', supplierId);
     return (response as List).map((item) => SupplierProductInfo.fromMap(item)).toList();
   }
   
@@ -230,7 +257,7 @@ class DatabaseService {
     if (!isValidUuid(id)) throw ArgumentError('ID de cuenta por cobrar no válido');
     final response = await _supabase
       .from('customer_receivables')
-      .select('*, customers(id, name), transactions(id, description, products(id, name))') // Ajusta joins según necesites
+      .select('*, customers(id, name), transactions(id, description, products(id, name))') 
       .eq('id', id)
       .maybeSingle();
     return response != null ? CustomerReceivable.fromMap(response) : null;
@@ -291,7 +318,6 @@ class DatabaseService {
 
   // ==================== FACTURAS DE PROVEEDORES (Supplier Invoices) ====================
   Future<List<SupplierInvoice>> getSupplierInvoices({String? supplierId, String? status}) async {
-    // CORRECCIÓN AQUÍ: Aplicar filtros antes de .order()
     PostgrestFilterBuilder<List<Map<String, dynamic>>> queryBuilder = _supabase
         .from('supplier_invoices')
         .select('*, suppliers(id, name)');
@@ -303,7 +329,6 @@ class DatabaseService {
       queryBuilder = queryBuilder.eq('status', status);
     }
     
-    // Aplicar .order() después de todos los filtros
     final response = await queryBuilder.order('due_date', ascending: true);
     return (response).map((item) => SupplierInvoice.fromMap(item)).toList();
   }
@@ -337,7 +362,6 @@ class DatabaseService {
 
   // ==================== CUENTAS POR COBRAR A CLIENTES (Customer Receivables) ====================
   Future<List<CustomerReceivable>> getCustomerReceivables({String? customerId, String? status}) async {
-    // CORRECCIÓN AQUÍ: Aplicar filtros antes de .order()
     PostgrestFilterBuilder<List<Map<String, dynamic>>> queryBuilder = _supabase
         .from('customer_receivables')
         .select('*, customers(id, name), transactions(id, description, products(id, name))'); 
@@ -349,7 +373,6 @@ class DatabaseService {
       queryBuilder = queryBuilder.eq('status', status);
     }
 
-    // Aplicar .order() después de todos los filtros
     final response = await queryBuilder.order('due_date', ascending: true);
     return (response).map((item) => CustomerReceivable.fromMap(item)).toList();
   }
@@ -457,7 +480,7 @@ class DatabaseService {
       Transaction(
         id: _uuid.v4(),
         type: 'generic_expense',
-        amount: -amount.abs(),
+        amount: -amount.abs(), // Asegurar que el monto del gasto sea negativo
         description: description,
         category: category,
         productId: null,
@@ -479,7 +502,7 @@ class DatabaseService {
       Transaction(
         id: _uuid.v4(),
         type: 'generic_income',
-        amount: amount.abs(),
+        amount: amount.abs(), // Asegurar que el monto del ingreso sea positivo
         description: description,
         category: category,
         productId: null,
