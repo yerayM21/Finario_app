@@ -1,70 +1,80 @@
-// lib/models/product.dart
+import 'package:intl/intl.dart'; // Para formatear fechas si es necesario
+
 class Product {
-  final String id;
-  final String name;
-  final int quantity;
-  final double unitCost;
-  final double salePrice;
-  final DateTime? restockDate;
-  final DateTime? expirationDate;
-  final DateTime updatedAt;
+  String? id; // Nullable si es nuevo y la BD genera el ID
+  String name;
+  int quantity;
+  double unitCost;
+  double salePrice;
+  DateTime? restockDate;
+  DateTime? expirationDate;
+  DateTime? createdAt;
+  DateTime? updatedAt;
 
   Product({
-    required this.id,
+    this.id,
     required this.name,
-    required this.quantity,
+    this.quantity = 0,
     required this.unitCost,
     required this.salePrice,
     this.restockDate,
     this.expirationDate,
-    required this.updatedAt,
+    this.createdAt,
+    this.updatedAt,
   });
 
   factory Product.fromMap(Map<String, dynamic> map) {
     return Product(
-      id: map['id'],
-      name: map['name'],
-      quantity: map['quantity'],
-      unitCost: (map['unit_cost'] as num).toDouble(),
-      salePrice: (map['sale_price'] as num).toDouble(),
-      restockDate: map['restock_date'] != null ? DateTime.parse(map['restock_date']) : null,
-      expirationDate: map['expiration_date'] != null ? DateTime.parse(map['expiration_date']) : null,
-      updatedAt: DateTime.parse(map['updated_at']),
+      id: map['id'] as String?,
+      name: map['name'] as String,
+      quantity: (map['quantity'] as num?)?.toInt() ?? 0,
+      unitCost: (map['unit_cost'] as num?)?.toDouble() ?? 0.0,
+      salePrice: (map['sale_price'] as num?)?.toDouble() ?? 0.0,
+      restockDate: map['restock_date'] != null ? DateTime.parse(map['restock_date'] as String) : null,
+      expirationDate: map['expiration_date'] != null ? DateTime.parse(map['expiration_date'] as String) : null,
+      createdAt: map['created_at'] != null ? DateTime.parse(map['created_at'] as String) : null,
+      updatedAt: map['updated_at'] != null ? DateTime.parse(map['updated_at'] as String) : null,
     );
   }
 
-  Map<String, dynamic> toMap() {
+  // Para inserciones donde la BD genera el ID y timestamps
+  Map<String, dynamic> toMapForInsert() {
     return {
-      'id': id,
       'name': name,
       'quantity': quantity,
       'unit_cost': unitCost,
       'sale_price': salePrice,
       'restock_date': restockDate?.toIso8601String(),
       'expiration_date': expirationDate?.toIso8601String(),
-      'updated_at': updatedAt.toIso8601String(),
+      // id, created_at, updated_at son manejados por la BD
+    };
+  }
+  
+  // Si el ID es generado por el cliente y quieres incluirlo en la inserción
+  Map<String, dynamic> toMapAllFields() {
+    return {
+      'id': id, // Asume que el ID ya fue asignado
+      'name': name,
+      'quantity': quantity,
+      'unit_cost': unitCost,
+      'sale_price': salePrice,
+      'restock_date': restockDate?.toIso8601String(),
+      'expiration_date': expirationDate?.toIso8601String(),
+      // created_at, updated_at son manejados por la BD
     };
   }
 
-  // Método para copiar un producto con nuevos valores
-  Product copyWith({
-    String? name,
-    int? quantity,
-    double? unitCost,
-    double? salePrice,
-    DateTime? restockDate,
-    DateTime? expirationDate,
-    DateTime? updatedAt,
-  }) {
-    return Product(
-      id: id,
-      name: name ?? this.name,
-      quantity: quantity ?? this.quantity,
-      unitCost: unitCost ?? this.unitCost,
-      salePrice: salePrice ?? this.salePrice,
-      restockDate: restockDate ?? this.restockDate,
-      expirationDate: expirationDate ?? this.expirationDate,
-      updatedAt: updatedAt ?? this.updatedAt,
-    );
+
+  // Para actualizaciones
+  Map<String, dynamic> toMapForUpdate() {
+    return {
+      'name': name,
+      'quantity': quantity,
+      'unit_cost': unitCost,
+      'sale_price': salePrice,
+      'restock_date': restockDate?.toIso8601String(),
+      'expiration_date': expirationDate?.toIso8601String(),
+      // id se usa en .eq(), created_at no se actualiza, updated_at es manejado por trigger
+    };
   }
 }

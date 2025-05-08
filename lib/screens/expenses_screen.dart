@@ -1,9 +1,9 @@
 import 'package:flutter/material.dart';
 import 'package:intl/intl.dart';
-// import 'package:uuid/uuid.dart'; // Uuid no se usa directamente en este archivo
-import '../models/product.dart';
-import '../models/transaction.dart';
-import '../services/DatabaseService.dart';
+// import 'package:uuid/uuid.dart'; // No se usa directamente
+import '../models/product.dart'; // Asegúrate que la ruta es correcta
+import '../models/transaction.dart'; // Asegúrate que la ruta es correcta
+import '../services/DatabaseService.dart'; // Asegúrate que la ruta es correcta
 
 class ExpensesScreen extends StatefulWidget {
   @override
@@ -19,7 +19,7 @@ class _ExpensesScreenState extends State<ExpensesScreen> {
 
   // Variables de estado
   String _transactionType = 'expense'; // 'expense' o 'income'
-  String? _selectedCategory; // Se inicializará en initState
+  String? _selectedCategory;
   String? _selectedProductId;
   DateTime _selectedDate = DateTime.now();
   List<Transaction> _transactions = [];
@@ -27,7 +27,6 @@ class _ExpensesScreenState extends State<ExpensesScreen> {
   bool _isLoading = true;
   bool _showProductFields = false;
 
-  // Mantenemos las categorías como estaban
   final Map<String, List<String>> _categories = {
     'expense': ['Compra de Inventario', 'Suministros', 'Salarios', 'Alquiler', 'Otros'],
     'income': ['Venta de Producto', 'Servicios', 'Reembolsos', 'Otros Ingresos'],
@@ -36,7 +35,6 @@ class _ExpensesScreenState extends State<ExpensesScreen> {
   @override
   void initState() {
     super.initState();
-    // CORRECCIÓN: Inicializar _selectedCategory basado en _transactionType
     _selectedCategory = _categories[_transactionType]?.first;
     _loadInitialData();
   }
@@ -53,7 +51,6 @@ class _ExpensesScreenState extends State<ExpensesScreen> {
     if (!mounted) return;
     setState(() => _isLoading = true);
     try {
-      // Usando Record para desestructurar el resultado de Future.wait
       final (transactions, products) = await (
         _dbService.getTransactions(),
         _dbService.getProducts(),
@@ -67,7 +64,7 @@ class _ExpensesScreenState extends State<ExpensesScreen> {
       });
     } catch (e) {
       if (!mounted) return;
-      _showError('Error al cargar datos: ${e.toString()}');
+      _showError('Error al cargar datos: ${e.toString().replaceFirst("Exception: ", "")}');
       setState(() => _isLoading = false);
     }
   }
@@ -77,82 +74,93 @@ class _ExpensesScreenState extends State<ExpensesScreen> {
 
     final amount = double.tryParse(_amountController.text);
     if (amount == null || amount <= 0) {
-        _showError('El monto debe ser un número positivo.');
-        return;
+      _showError('El monto debe ser un número positivo.');
+      return;
     }
     
     final isProductTransaction = _showProductFields && _selectedProductId != null;
+    // Bloquear el botón mientras se procesa
+    if (!mounted) return;
+    setState(() => _isLoading = true);
 
     try {
-      if (isProductTransaction) {
-        final product = _products.firstWhere(
-          (p) => p.id == _selectedProductId,
-          // orElse no es necesario si estamos seguros que _selectedProductId es válido y está en _products
-          // La validación del DropdownButtonFormField debería asegurar que _selectedProductId es válido.
-        );
+      String? transactionId; // Para almacenar el ID devuelto, aunque no se use directamente aquí
 
+      if (isProductTransaction) {
+        final product = _products.firstWhere((p) => p.id == _selectedProductId);
         final quantity = int.tryParse(_quantityController.text);
+
         if (quantity == null || quantity <= 0) {
           _showError('La cantidad del producto debe ser un número entero positivo.');
+          setState(() => _isLoading = false); // Desbloquear botón
           return;
         }
 
-        if (_transactionType == 'income') {
-          // MEJORA: Validación de stock en el cliente
+        if (_transactionType == 'income') { // Venta de producto
           if (product.quantity < quantity) {
             _showError('Stock insuficiente para ${product.name}. Stock actual: ${product.quantity}');
+            setState(() => _isLoading = false); // Desbloquear botón
             return;
           }
-          await _dbService.registerSale(
-            product: product,
+          // LLAMADA ACTUALIZADA A registerSale
+          transactionId = await _dbService.registerSale(
+            productId: product.id!, // Pasar productId como String
+            productName: product.name, // Pasar productName como String
             quantity: quantity,
           );
-        } else { // 'expense'
-          // Con la UI mejorada, _selectedCategory debería ser 'Compra de Inventario'
+        } else { // Compra de producto ('expense')
           if (_selectedCategory != 'Compra de Inventario') {
-             // Este error ahora es más una salvaguarda interna
             _showError('Error interno: La categoría para compra de producto no es "Compra de Inventario".');
+            setState(() => _isLoading = false); // Desbloquear botón
             return;
           }
-          await _dbService.registerPurchase(
-            product: product,
+          // LLAMADA ACTUALIZADA A registerPurchase
+          transactionId = await _dbService.registerPurchase(
+            productId: product.id!, // Pasar productId como String
+            productName: product.name, // Pasar productName como String
             quantity: quantity,
-            unitCost: amount / quantity, // 'amount' es el costo total
+            unitCost: amount / quantity, // 'amount' es el costo total de la compra para esta UI
           );
         }
       } else { // Transacción genérica
         if (_selectedCategory == null || _descriptionController.text.isEmpty) {
-             _showError('Descripción y categoría son requeridas para transacciones genéricas.');
-            return;
+          _showError('Descripción y categoría son requeridas para transacciones genéricas.');
+          setState(() => _isLoading = false); // Desbloquear botón
+          return;
         }
         if (_transactionType == 'income') {
-          await _dbService.registerGenericIncome(
+          // addGenericIncome devuelve Transaction, podemos obtener el ID si es necesario
+          final genericTx = await _dbService.registerGenericIncome(
             amount: amount,
             description: _descriptionController.text,
             category: _selectedCategory!,
             date: _selectedDate,
           );
+          transactionId = genericTx.id;
         } else { // 'expense'
-          await _dbService.registerGenericExpense(
+          final genericTx = await _dbService.registerGenericExpense(
             amount: amount,
             description: _descriptionController.text,
             category: _selectedCategory!,
             date: _selectedDate,
           );
+          transactionId = genericTx.id;
         }
       }
 
       _resetForm();
-      await _loadInitialData(); // Recargar datos después de la transacción
-      _showSuccess('Transacción registrada exitosamente');
+      await _loadInitialData(); // Recarga los datos, lo que ya quita el _isLoading
+      _showSuccess('Transacción registrada exitosamente${transactionId != null ? " (ID: ${transactionId.substring(0,8)}...)" : ""}');
     } catch (e) {
-      // Simplificar el mensaje de error si es una excepción de la base de datos
       String errorMessage = e.toString();
-      if (e is Exception) {
-          final message = e.toString().replaceFirst('Exception: ', '');
-          errorMessage = message;
+      if (errorMessage.startsWith('Exception: ')) {
+        errorMessage = errorMessage.substring('Exception: '.length);
       }
       _showError('Error al registrar transacción: $errorMessage');
+    } finally {
+      if (mounted) {
+        setState(() => _isLoading = false); // Asegurar que se desbloquee el botón
+      }
     }
   }
 
@@ -166,7 +174,6 @@ class _ExpensesScreenState extends State<ExpensesScreen> {
       _selectedProductId = null;
       // _showProductFields se mantiene, el usuario decide si la siguiente es de producto
       // _transactionType se mantiene
-      // _selectedCategory se ajusta según _transactionType y _showProductFields
       if (_showProductFields) {
         _selectedCategory = (_transactionType == 'expense') ? 'Compra de Inventario' : 'Venta de Producto';
       } else {
@@ -181,7 +188,7 @@ class _ExpensesScreenState extends State<ExpensesScreen> {
       context: context,
       initialDate: _selectedDate,
       firstDate: DateTime(2000),
-      lastDate: DateTime.now().add(Duration(days: 365)), // Permitir fechas futuras si es necesario
+      lastDate: DateTime.now().add(Duration(days: 365)),
     );
     if (picked != null && picked != _selectedDate) {
       if (!mounted) return;
@@ -215,7 +222,6 @@ class _ExpensesScreenState extends State<ExpensesScreen> {
 
   @override
   Widget build(BuildContext context) {
-    // Calcular el balance aquí para asegurar que se actualiza con _transactions
     final balance = _transactions.fold(0.0, (sum, t) => sum + t.amount);
 
     return Scaffold(
@@ -224,18 +230,18 @@ class _ExpensesScreenState extends State<ExpensesScreen> {
         actions: [
           IconButton(
             icon: Icon(Icons.refresh),
-            onPressed: _isLoading ? null : _loadInitialData, // Deshabilitar si ya está cargando
+            onPressed: _isLoading ? null : _loadInitialData,
           ),
         ],
       ),
-      body: _isLoading
+      body: _isLoading && _transactions.isEmpty // Mostrar loading solo si no hay transacciones cargadas aún
           ? Center(child: CircularProgressIndicator())
           : Column(
               children: [
                 _buildBalanceCard(balance),
                 Expanded(
                   child: ListView(
-                    padding: EdgeInsets.all(8.0), // Añadir padding general
+                    padding: EdgeInsets.all(8.0),
                     children: [
                       _buildTransactionForm(),
                       SizedBox(height: 20),
@@ -262,7 +268,7 @@ class _ExpensesScreenState extends State<ExpensesScreen> {
               style: TextStyle(fontSize: 18, fontWeight: FontWeight.bold),
             ),
             Text(
-              NumberFormat.currency(locale: 'es_MX', symbol: '\$').format(balance), // Formato de moneda
+              NumberFormat.currency(locale: 'es_MX', symbol: '\$').format(balance),
               style: TextStyle(
                 fontSize: 20,
                 fontWeight: FontWeight.bold,
@@ -276,14 +282,13 @@ class _ExpensesScreenState extends State<ExpensesScreen> {
   }
 
   Widget _buildTransactionForm() {
-    // MEJORA: Determinar si el dropdown de categoría debe estar habilitado
     final bool isCategoryDropdownEnabled = !_showProductFields;
     final String? currentCategoryLabel = _showProductFields
         ? (_transactionType == 'expense' ? 'Compra de Inventario' : 'Venta de Producto')
         : _selectedCategory;
 
     return Card(
-      margin: EdgeInsets.symmetric(horizontal: 4, vertical: 8), // Ajuste de margen
+      margin: EdgeInsets.symmetric(horizontal: 4, vertical: 8),
       elevation: 2,
       child: Padding(
         padding: EdgeInsets.all(16),
@@ -305,7 +310,9 @@ class _ExpensesScreenState extends State<ExpensesScreen> {
               TextFormField(
                 controller: _amountController,
                 decoration: InputDecoration(
-                  labelText: 'Monto',
+                  labelText: _showProductFields && _transactionType == 'expense'
+                      ? 'Monto Total de Compra' // Para Compra de Inventario, este es el costo total
+                      : 'Monto', // Para Ventas (se calcula) o Genéricos
                   prefixText: '\$',
                   border: OutlineInputBorder(),
                 ),
@@ -319,8 +326,6 @@ class _ExpensesScreenState extends State<ExpensesScreen> {
                 },
               ),
               SizedBox(height: 16),
-              // La descripción es opcional para compras/ventas de producto (se autogenera)
-              // pero requerida para genéricos.
               if (!_showProductFields)
                 TextFormField(
                   controller: _descriptionController,
@@ -332,10 +337,8 @@ class _ExpensesScreenState extends State<ExpensesScreen> {
                     !_showProductFields && (value == null || value.isEmpty) ? 'Requerido para genéricos' : null,
                 ),
               if (!_showProductFields) SizedBox(height: 16),
-
-              // Dropdown de Categoría
               DropdownButtonFormField<String>(
-                value: currentCategoryLabel, // Usar el label actual
+                value: currentCategoryLabel,
                 items: (_categories[_transactionType] ?? []).map((category) {
                   return DropdownMenuItem(
                     value: category,
@@ -344,7 +347,7 @@ class _ExpensesScreenState extends State<ExpensesScreen> {
                 }).toList(),
                 onChanged: isCategoryDropdownEnabled
                     ? (value) => setState(() => _selectedCategory = value)
-                    : null, // Deshabilitado si _showProductFields es true
+                    : null,
                 decoration: InputDecoration(
                   labelText: 'Categoría',
                   border: OutlineInputBorder(),
@@ -360,14 +363,21 @@ class _ExpensesScreenState extends State<ExpensesScreen> {
                 onChanged: (newValue) {
                   setState(() {
                     _showProductFields = newValue;
-                    _quantityController.clear(); // Limpiar cantidad al cambiar
-                    _selectedProductId = null; // Deseleccionar producto
-                    if (newValue) { // Si se activan los campos de producto
-                      _descriptionController.clear(); // Descripción es automática para productos
+                    _quantityController.clear();
+                    _selectedProductId = null;
+                    if (newValue) {
+                      _descriptionController.clear();
                       _selectedCategory = (_transactionType == 'expense')
                           ? 'Compra de Inventario'
                           : 'Venta de Producto';
-                    } else { // Si se desactivan (transacción genérica)
+                      // Para ventas, el monto se calcula desde el precio del producto,
+                      // así que podríamos deshabilitar o limpiar el _amountController
+                      // o cambiar su etiqueta para reflejar que es informativo o no aplica.
+                      // Para compras, _amountController es el costo total.
+                      if (_transactionType == 'income') {
+                        //_amountController.clear(); // Opcional: limpiar monto si es venta de producto
+                      }
+                    } else {
                       _selectedCategory = _categories[_transactionType]?.first;
                     }
                   });
@@ -401,9 +411,8 @@ class _ExpensesScreenState extends State<ExpensesScreen> {
                     border: OutlineInputBorder(),
                   ),
                   keyboardType: TextInputType.number,
-                  // CORRECCIÓN: Validador de cantidad mejorado
                   validator: (value) {
-                    if (!_showProductFields) return null; // No validar si no se muestra
+                    if (!_showProductFields) return null;
                     if (value == null || value.isEmpty) return 'Requerido';
                     final quantity = int.tryParse(value);
                     if (quantity == null) return 'Cantidad debe ser un número';
@@ -426,7 +435,9 @@ class _ExpensesScreenState extends State<ExpensesScreen> {
                   textStyle: TextStyle(fontSize: 16),
                   minimumSize: Size(double.infinity, 50),
                 ),
-                child: _isLoading ? SizedBox(height: 20, width: 20, child: CircularProgressIndicator(strokeWidth: 3, color: Colors.white)) : Text('Registrar Transacción'),
+                child: _isLoading 
+                    ? SizedBox(height: 20, width: 20, child: CircularProgressIndicator(strokeWidth: 3, color: Colors.white)) 
+                    : Text('Registrar Transacción'),
               ),
             ],
           ),
@@ -447,14 +458,15 @@ class _ExpensesScreenState extends State<ExpensesScreen> {
         padding: EdgeInsets.symmetric(vertical: 12),
       ),
       onPressed: () {
-        if (_transactionType == typeValue) return; // No hacer nada si ya está seleccionado
+        if (_transactionType == typeValue) return;
         setState(() {
           _transactionType = typeValue;
-          // MEJORA: Ajustar categoría al cambiar tipo
           if (_showProductFields) {
             _selectedCategory = (typeValue == 'expense')
                 ? 'Compra de Inventario'
                 : 'Venta de Producto';
+            // Si cambia a venta de producto, el campo de monto podría ser interpretado diferente.
+            // if (typeValue == 'income') _amountController.clear(); 
           } else {
             _selectedCategory = _categories[typeValue]?.first;
           }
@@ -465,12 +477,16 @@ class _ExpensesScreenState extends State<ExpensesScreen> {
   }
 
  Widget _buildTransactionList() {
-    if (_transactions.isEmpty) {
+    if (_transactions.isEmpty && !_isLoading) { // Mostrar mensaje solo si no está cargando y no hay transacciones
       return Padding(
         padding: const EdgeInsets.all(16.0),
         child: Center(child: Text('No hay transacciones registradas.', style: TextStyle(fontSize: 16, color: Colors.grey[600]))),
       );
     }
+    if (_isLoading && _transactions.isEmpty) { // Si está cargando y no hay nada, no mostrar lista aún (ya hay un loader global)
+        return SizedBox.shrink();
+    }
+
     return Column(
       crossAxisAlignment: CrossAxisAlignment.start,
       children: [
@@ -485,7 +501,6 @@ class _ExpensesScreenState extends State<ExpensesScreen> {
           separatorBuilder: (context, index) => Divider(height: 1, indent: 16, endIndent: 16),
           itemBuilder: (context, index) {
             final transaction = _transactions[index];
-            // El nombre del producto ya viene en transaction.productName si el join funcionó
             final String? displayProductName = transaction.productName;
 
             return ListTile(
@@ -511,7 +526,7 @@ class _ExpensesScreenState extends State<ExpensesScreen> {
                     '${transaction.category} • ${DateFormat('dd/MM/yyyy, hh:mm a').format(transaction.date)}',
                     style: TextStyle(fontSize: 12, color: Colors.grey[700]),
                   ),
-                  if (displayProductName != null)
+                  if (displayProductName != null && displayProductName.isNotEmpty)
                     Text(
                       'Producto: $displayProductName${transaction.quantity != null ? " (x${transaction.quantity})" : ""}',
                       style: TextStyle(fontSize: 12, fontStyle: FontStyle.italic),
