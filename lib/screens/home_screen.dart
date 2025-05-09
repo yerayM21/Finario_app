@@ -34,6 +34,12 @@ class HomeScreen extends StatelessWidget {
       'color': Colors.red,
       'route': '/reports'
     },
+    'locals':{
+      'title':'locals',
+      'icon': Icons.map,
+      'color': Colors.yellow,
+      'route':'/locals'
+    },
   };
 
   @override

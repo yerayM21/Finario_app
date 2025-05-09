@@ -12,6 +12,7 @@ import 'screens/login_screens.dart';
 import 'screens/register_screen.dart';
 import 'screens/profile_screen.dart';
 import 'screens/home_screen.dart';
+import 'screens/maps_screens.dart';
 
 void main() async {
   WidgetsFlutterBinding.ensureInitialized();
@@ -46,6 +47,7 @@ class Finario extends StatelessWidget {
           '/management': (context) => ManagementScreen(),
           '/profit': (context) => ProfitScreen(),
           '/reports': (context) => ReportsScreen(),
+          '/locals':(context) => MapsScreen(),
         },
       )
     );
